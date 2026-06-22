@@ -30,15 +30,30 @@ auto-video-downloader/
 │   ├── core/             # Logic nghiệp vụ
 │   │   ├── __init__.py
 │   │   ├── video_extractor.py  # Extract link từ selector
-│   │   ├── downloader.py       # Download m3u8 + convert
 │   │   ├── history_manager.py  # Quản lý lịch sử JSON
 │   │   ├── quality_selector.py # Chọn chất lượng video
-│   │   └── tracker.py          # Tracking tập mới + scheduler
+│   │   ├── download/           # Download logic (deep modules)
+│   │   │   ├── __init__.py
+│   │   │   ├── m3u8_downloader.py      # Download m3u8
+│   │   │   ├── video_converter.py      # Convert sang mp4
+│   │   │   └── download_coordinator.py # Batch coordination
+│   │   ├── tracking/          # Tracking logic (deep modules)
+│   │   │   ├── __init__.py
+│   │   │   ├── watch_list_manager.py   # Watch list CRUD
+│   │   │   ├── episode_tracker.py      # Update detection
+│   │   │   └── scheduler_manager.py    # Scheduler lifecycle
+│   │   └── ports/             # External dependency ports
+│   │       ├── __init__.py
+│   │       ├── ffmpeg_port.py          # FFmpeg interface
+│   │       ├── http_port.py            # HTTP interface
+│   │       └── scheduler_port.py       # Scheduler interface
 │   └── utils/            # Helper functions
 │       ├── __init__.py
 │       ├── path_helper.py      # Xử lý đường dẫn thư mục
-│       ├── ffmpeg_helper.py    # Wrapper FFmpeg
 │       └── notification_helper.py # Desktop notifications
+├── tests/               # Tests
+│   ├── unit/            # Unit tests
+│   └── integration/     # Integration tests
 ├── main.py               # Entry point
 ├── requirements.txt      # Dependencies
 └── config.json           # Cấu hình mặc định
@@ -50,6 +65,8 @@ auto-video-downloader/
 - Core module độc lập, có thể test mà không cần GUI
 - Utils chứa các hàm tái sử dụng, không phụ thuộc vào module khác
 - Tách biệt rõ ràng giữa UI và logic
+- **Deep modules**: Small interface, focused implementation, high leverage
+- **Ports & Adapters**: External dependencies injected through ports for testability
 
 ## Module: GUI
 
@@ -132,22 +149,46 @@ class VideoInfo:
     m3u8_link: str
 ```
 
-### downloader.py - Download m3u8 + convert
+### download/ - Download logic (deep modules)
 
-**Functions:**
-- `download_video(video_info, quality, output_path, stream_convert, progress_callback)`
-  - Download m3u8 sử dụng FFmpeg qua subprocess
+#### m3u8_downloader.py - Download m3u8
+
+**Interface:**
+- `download(m3u8_url, output_path, progress_callback) -> None`
+  - Download m3u8 sử dụng FFmpegPort
   - Hỗ trợ resume (check file temp tồn tại)
-  - Batch download với thread pool (số lượng theo config)
   - Callback progress cho GUI update
-  - Nếu `stream_convert = false`: Download → convert → xóa temp
-  - Nếu `stream_convert = true`: Stream convert trực tiếp
 
 **Responsibilities:**
-- Quản lý download process
-- Convert m3u8 sang mp4
-- Resume download nếu bị ngắt
-- Báo cáo progress
+- Download m3u8 streams
+- Resume logic
+- Progress reporting
+
+#### video_converter.py - Convert sang mp4
+
+**Interface:**
+- `convert(input_path, output_path, progress_callback) -> None`
+  - Convert video sang mp4 sử dụng FFmpegPort
+  - Xóa file temp sau khi convert thành công
+  - Callback progress cho GUI update
+
+**Responsibilities:**
+- Convert video formats
+- Temp file cleanup
+- Progress reporting
+
+#### download_coordinator.py - Batch coordination
+
+**Interface:**
+- `download_videos(videos, max_concurrent, progress_callback) -> None`
+  - Batch download với thread pool
+  - Điều phối m3u8_downloader và video_converter
+  - Tổng hợp progress từ tất cả downloads
+
+**Responsibilities:**
+- Batch coordination
+- Thread pool management
+- Progress aggregation
 
 ### history_manager.py - Quản lý lịch sử JSON
 
@@ -171,24 +212,113 @@ class VideoInfo:
 - Phát hiện các chất lượng có sẵn
 - Chọn chất lượng theo logic: default hoặc cao nhất
 
-### tracker.py - Tracking tập mới + scheduler
+### tracking/ - Tracking logic (deep modules)
 
-**Functions:**
+#### watch_list_manager.py - Watch list CRUD
+
+**Interface:**
 - `add_watch_list(url, selector, schedule, auto_download, notify) -> watch_id`
-- `remove_watch_list(watch_id)`
-- `check_updates(watch_id) -> List[NewEpisode]`
-- `run_scheduler()` - Background thread chạy cron jobs
+- `remove_watch_list(watch_id) -> bool`
+- `get_watch_list(watch_id) -> WatchListEntry`
+- `get_all_watch_lists() -> List[WatchListEntry]`
 
-**Storage:**
-- File JSON riêng cho watch list
-- Format: `{watch_id: {url, selector, schedule, auto_download, notify, last_check, known_episodes}}`
+**Responsibilities:**
+- Watch list persistence (JSON)
+- CRUD operations
+- Validation
 
-**Scheduler:**
-- Sử dụng APScheduler với cron trigger
-- Background thread check định kỳ
-- Khi phát hiện tập mới:
-  - Nếu auto_download = true: Thêm vào queue
-  - Nếu notify = true: Gửi notification
+#### episode_tracker.py - Update detection
+
+**Interface:**
+- `check_for_updates(watch_list_entry) -> List[NewEpisode]`
+  - Sử dụng HTTPPort để fetch HTML
+  - Sử dụng video_extractor để extract episodes
+  - So sánh với known_episodes để tìm tập mới
+
+**Responsibilities:**
+- Update detection logic
+- Episode comparison
+- New episode identification
+
+#### scheduler_manager.py - Scheduler lifecycle
+
+**Interface:**
+- `start_scheduler() -> None`
+- `stop_scheduler() -> None`
+- `add_job(watch_id, schedule, callback) -> None`
+- `remove_job(watch_id) -> None`
+
+**Responsibilities:**
+- Scheduler lifecycle management
+- Job scheduling sử dụng SchedulerPort
+- Start/stop background thread
+
+## Module: Ports
+
+### ports/ - External dependency ports
+
+#### ffmpeg_port.py - FFmpeg interface
+
+**Interface:**
+```python
+class FFmpegPort(ABC):
+    @abstractmethod
+    def check_available(self) -> bool: pass
+
+    @abstractmethod
+    def get_path(self) -> str: pass
+
+    @abstractmethod
+    def run_command(self, args: List[str], progress_callback: Callable) -> subprocess.CompletedProcess: pass
+```
+
+**Adapters:**
+- `FFmpegAdapter` - Production adapter using subprocess
+- `MockFFmpegAdapter` - Test adapter for unit tests
+
+**Dependency Category:** True external (mock for tests)
+
+#### http_port.py - HTTP interface
+
+**Interface:**
+```python
+class HTTPPort(ABC):
+    @abstractmethod
+    def get(self, url: str, timeout: int = 30) -> HTTPResponse: pass
+
+    @abstractmethod
+    def post(self, url: str, data: Dict, timeout: int = 30) -> HTTPResponse: pass
+```
+
+**Adapters:**
+- `RequestsAdapter` - Production adapter using requests library
+- `MockHTTPAdapter` - Test adapter for unit tests
+
+**Dependency Category:** True external (mock for tests)
+
+#### scheduler_port.py - Scheduler interface
+
+**Interface:**
+```python
+class SchedulerPort(ABC):
+    @abstractmethod
+    def start(self) -> None: pass
+
+    @abstractmethod
+    def shutdown(self) -> None: pass
+
+    @abstractmethod
+    def add_job(self, func: Callable, trigger: str, **kwargs) -> str: pass
+
+    @abstractmethod
+    def remove_job(self, job_id: str) -> None: pass
+```
+
+**Adapters:**
+- `APSchedulerAdapter` - Production adapter using APScheduler
+- `MockSchedulerAdapter` - Test adapter for unit tests
+
+**Dependency Category:** True external (mock for tests)
 
 ## Module: Utils
 
@@ -203,20 +333,6 @@ class VideoInfo:
 **Responsibilities:**
 - Tạo cấu trúc thư mục tự động
 - Sanitize filenames
-
-### ffmpeg_helper.py - Wrapper FFmpeg
-
-**Functions:**
-- `check_ffmpeg_available() -> bool`
-- `get_ffmpeg_path() -> str` (đọc từ config hoặc PATH)
-- `run_ffmpeg_command(args, progress_callback) -> subprocess result`
-  - Parse FFmpeg output để extract progress
-  - Xử lý lỗi FFmpeg
-
-**Responsibilities:**
-- Kiểm tra FFmpeg availability
-- Thực thi FFmpeg commands
-- Parse output
 
 ### notification_helper.py - Desktop notifications
 
@@ -241,32 +357,37 @@ class VideoInfo:
 
 1. User chọn video + chất lượng → GUI
 2. GUI check `history_manager.is_downloaded()` → nếu đã tải, skip
-3. GUI gọi `downloader.download_video()` với callback progress
-4. Downloader tạo output path qua `path_helper`
-5. Downloader chạy FFmpeg download m3u8 → file temp (.ts hoặc .mp4)
-6. Nếu `stream_convert = false`: FFmpeg convert file temp → .mp4, xóa temp
-7. Nếu `stream_convert = true`: FFmpeg stream convert trực tiếp → .mp4
-8. FFmpeg output parsed → callback progress → GUI update
-9. Hoàn thành → GUI gọi `history_manager.mark_downloaded()`
+3. GUI gọi `download_coordinator.download_videos()` với callback progress
+4. Coordinator tạo output path qua `path_helper`
+5. Coordinator gọi `m3u8_downloader.download()` với FFmpegPort
+6. Downloader chạy FFmpeg download m3u8 → file temp (.ts hoặc .mp4)
+7. Nếu `stream_convert = false`: Coordinator gọi `video_converter.convert()` → .mp4, xóa temp
+8. Nếu `stream_convert = true`: Downloader stream convert trực tiếp → .mp4
+9. FFmpeg output parsed → callback progress → GUI update
+10. Hoàn thành → GUI gọi `history_manager.mark_downloaded()`
 
 ### Flow 3: Batch download
 
 1. User chọn nhiều video → GUI
-2. GUI tạo thread pool (số lượng theo config)
-3. Mỗi thread chạy Flow 2 độc lập
-4. GUI tổng hợp progress từ tất cả threads
+2. GUI gọi `download_coordinator.download_videos()` với max_concurrent
+3. Coordinator tạo thread pool với max_workers
+4. Mỗi thread gọi `m3u8_downloader.download()` + `video_converter.convert()`
+5. Coordinator tổng hợp progress từ tất cả threads
+6. GUI hiển thị tổng progress
 
 ### Flow 4: Tracking + Auto-download
 
 1. User add watch list với schedule → GUI
-2. Tracker lưu watch list vào JSON
-3. Scheduler background thread check định kỳ
-4. Khi đến schedule: `tracker.check_updates()`
-5. So sánh với known_episodes, tìm tập mới
-6. Nếu có tập mới:
-   - Nếu auto_download = true: Thêm vào download queue
+2. GUI gọi `watch_list_manager.add_watch_list()`
+3. GUI gọi `scheduler_manager.add_job()` với callback
+4. Scheduler background thread check định kỳ qua SchedulerPort
+5. Khi đến schedule: callback gọi `episode_tracker.check_for_updates()`
+6. Episode tracker sử dụng HTTPPort + video_extractor
+7. So sánh với known_episodes, tìm tập mới
+8. Nếu có tập mới:
+   - Nếu auto_download = true: Thêm vào download_coordinator
    - Nếu notify = true: Gửi desktop + in-app notification
-7. Download queue chạy như Flow 2/3
+9. Download queue chạy như Flow 2/3
 
 ## Error Handling
 
@@ -307,6 +428,7 @@ class VideoInfo:
 - APScheduler (scheduler)
 - pytest (testing)
 - FFmpeg (external, cần cài đặt)
+- abc (for port interfaces)
 
 ## Configuration
 
@@ -314,7 +436,7 @@ class VideoInfo:
 ```json
 {
   "concurrent_downloads": 3,
-  "default_quality": "720p",
+  "default_quality": "1080p",
   "stream_convert": false,
   "ffmpeg_path": "",
   "output_dir": "./downloads"
