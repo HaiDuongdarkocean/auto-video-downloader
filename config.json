@@ -1,0 +1,7 @@
+{
+  "concurrent_downloads": 3,
+  "default_quality": "1080p",
+  "stream_convert": false,
+  "ffmpeg_path": "",
+  "output_dir": "./downloads"
+}
