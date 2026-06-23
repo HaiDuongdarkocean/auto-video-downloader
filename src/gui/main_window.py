@@ -25,11 +25,15 @@ from src.core.config_manager import ConfigManager
 from src.core.download.download_coordinator import DownloadCoordinator
 from src.core.download.m3u8_downloader import M3U8Downloader
 from src.core.download.video_converter import VideoConverter
+from src.core.error_handler import format_user_error, validate_url
 from src.core.history_manager import HistoryManager
 from src.core.ports.ffmpeg_adapter import FFmpegAdapter
 from src.core.ports.requests_adapter import RequestsAdapter
 from src.core.video_extractor import VideoExtractor, VideoInfo
 from src.gui.download_dialog import DownloadDialog
+from src.utils.logger import get_logger
+
+_logger = get_logger("main_window")
 
 
 DARK_THEME_QSS = """
@@ -269,7 +273,8 @@ class MainWindow(QMainWindow):
 
         Returns:
             List of VideoInfo discovered for the current URL and selector.
-            Returns an empty list when inputs are missing.
+            Returns an empty list when inputs are missing or invalid, or when
+            a network error occurs (a user-friendly message is shown).
         """
         url = self._url_input.text().strip()
         selector = self._selector_input.text().strip()
@@ -280,10 +285,34 @@ class MainWindow(QMainWindow):
                 "Please provide both a website URL and a CSS selector.",
             )
             return []
+        if not validate_url(url):
+            QMessageBox.warning(
+                self,
+                "Invalid URL",
+                "Please provide a valid http:// or https:// URL.",
+            )
+            return []
         extractor = self._extractor
         if extractor is None:
             extractor = VideoExtractor(RequestsAdapter())
-        return extractor.extract_video_links(url, selector)
+        try:
+            return extractor.extract_video_links(url, selector)
+        except (ConnectionError, TimeoutError) as exc:
+            _logger.error("Network error extracting videos from %s: %s", url, exc)
+            QMessageBox.critical(
+                self,
+                "Network error",
+                format_user_error(exc),
+            )
+            return []
+        except RuntimeError as exc:
+            _logger.error("Error extracting videos from %s: %s", url, exc)
+            QMessageBox.critical(
+                self,
+                "Extraction error",
+                format_user_error(exc),
+            )
+            return []
 
     def get_selected_videos(self) -> List[VideoInfo]:
         """Return the videos selected in the most recent download dialog."""
@@ -325,7 +354,16 @@ class MainWindow(QMainWindow):
                 progress_callback=self._on_download_progress,
                 cancel_event=self._cancel_event,
             )
+        except (PermissionError, OSError, RuntimeError) as exc:
+            _logger.error("Download error: %s", exc, exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Download error",
+                format_user_error(exc),
+            )
+            return
         except Exception as exc:
+            _logger.error("Download error: %s", exc, exc_info=True)
             QMessageBox.warning(
                 self,
                 "Download error",

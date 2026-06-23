@@ -7,7 +7,10 @@ from typing import Callable, List, Optional
 from src.core.download.m3u8_downloader import M3U8Downloader
 from src.core.download.video_converter import VideoConverter
 from src.core.video_extractor import VideoInfo
+from src.utils.logger import get_logger
 from src.utils.path_helper import create_output_path
+
+_logger = get_logger("download_coordinator")
 
 
 @dataclass
@@ -119,6 +122,13 @@ class DownloadCoordinator:
                 error=None,
             )
         except Exception as exc:
+            _logger.error(
+                "Download failed for %s (%s): %s",
+                video.url,
+                video.title,
+                exc,
+                exc_info=True,
+            )
             return DownloadResult(
                 video_url=video.url,
                 success=False,
