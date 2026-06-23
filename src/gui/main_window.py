@@ -1,18 +1,26 @@
 """Main window for the video downloader GUI."""
 
+from typing import List, Optional
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
+    QDialog,
     QFrame,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMenuBar,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
+
+from src.core.ports.requests_adapter import RequestsAdapter
+from src.core.video_extractor import VideoExtractor, VideoInfo
+from src.gui.download_dialog import DownloadDialog
 
 
 DARK_THEME_QSS = """
@@ -110,7 +118,7 @@ QMenu::item:selected {
 class MainWindow(QMainWindow):
     """Main application window with a card-based dark-themed layout."""
 
-    def __init__(self) -> None:
+    def __init__(self, extractor: Optional[VideoExtractor] = None) -> None:
         super().__init__()
         self.setWindowTitle("Video Downloader")
         self.resize(720, 480)
@@ -118,6 +126,8 @@ class MainWindow(QMainWindow):
         self._selector_input: QLineEdit = None  # type: ignore[assignment]
         self._extract_button: QPushButton = None  # type: ignore[assignment]
         self._progress_bar: QProgressBar = None  # type: ignore[assignment]
+        self._extractor: Optional[VideoExtractor] = extractor
+        self._selected_videos: List[VideoInfo] = []
         self._setup_ui()
         self._setup_menu()
         self._apply_theme()
@@ -201,8 +211,39 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_THEME_QSS)
 
     def _on_extract_clicked(self) -> None:
-        """Placeholder handler for the extract button."""
-        print("Extract clicked (not wired yet)")
+        """Handle the extract button: fetch videos and open the download dialog."""
+        videos = self.extract_videos()
+        if not videos:
+            QMessageBox.information(self, "No videos", "No videos found.")
+            return
+        dialog = DownloadDialog(videos, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._selected_videos = dialog.get_selected_videos()
+
+    def extract_videos(self) -> List[VideoInfo]:
+        """Read inputs and fetch video links using the configured extractor.
+
+        Returns:
+            List of VideoInfo discovered for the current URL and selector.
+            Returns an empty list when inputs are missing.
+        """
+        url = self._url_input.text().strip()
+        selector = self._selector_input.text().strip()
+        if not url or not selector:
+            QMessageBox.warning(
+                self,
+                "Missing input",
+                "Please provide both a website URL and a CSS selector.",
+            )
+            return []
+        extractor = self._extractor
+        if extractor is None:
+            extractor = VideoExtractor(RequestsAdapter())
+        return extractor.extract_video_links(url, selector)
+
+    def get_selected_videos(self) -> List[VideoInfo]:
+        """Return the videos selected in the most recent download dialog."""
+        return list(self._selected_videos)
 
     def _on_open_settings(self) -> None:
         """Placeholder handler for opening the settings dialog."""
