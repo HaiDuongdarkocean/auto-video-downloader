@@ -51,6 +51,7 @@ class DownloadCoordinator:
         videos: List[VideoInfo],
         max_concurrent: int = 3,
         progress_callback: Optional[Callable[[float], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> List[DownloadResult]:
         """Download and convert a batch of videos concurrently.
 
@@ -59,6 +60,8 @@ class DownloadCoordinator:
             max_concurrent: Maximum number of concurrent downloads.
             progress_callback: Optional callback receiving overall progress
                 percentage (0-100) as videos complete.
+            cancel_event: Optional threading.Event that, when set, causes
+                remaining videos to be skipped and marked as cancelled.
 
         Returns:
             List of DownloadResult, one per input video, in input order.
@@ -73,9 +76,21 @@ class DownloadCoordinator:
         lock = threading.Lock()
 
         def process(index: int, video: VideoInfo) -> None:
+            nonlocal completed
+            if cancel_event is not None and cancel_event.is_set():
+                with lock:
+                    results[index] = DownloadResult(
+                        video_url=video.url,
+                        success=False,
+                        output_path="",
+                        error="cancelled",
+                    )
+                    completed += 1
+                    if progress_callback:
+                        progress_callback(completed / total * 100.0)
+                return
             result = self._download_one(video)
             with lock:
-                nonlocal completed
                 results[index] = result
                 completed += 1
                 if progress_callback:

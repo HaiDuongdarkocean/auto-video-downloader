@@ -1,5 +1,6 @@
 """Main window for the video downloader GUI."""
 
+import threading
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt
@@ -9,6 +10,8 @@ from PyQt6.QtWidgets import (
     QFrame,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenuBar,
     QMessageBox,
@@ -138,6 +141,10 @@ class MainWindow(QMainWindow):
         self._selector_input: QLineEdit = None  # type: ignore[assignment]
         self._extract_button: QPushButton = None  # type: ignore[assignment]
         self._progress_bar: QProgressBar = None  # type: ignore[assignment]
+        self._status_list: QListWidget = None  # type: ignore[assignment]
+        self._cancel_button: QPushButton = None  # type: ignore[assignment]
+        self._cancel_event: Optional[threading.Event] = None
+        self._download_total: int = 0
         self._extractor: Optional[VideoExtractor] = extractor
         self._selected_videos: List[VideoInfo] = []
         self._download_coordinator: DownloadCoordinator = (
@@ -203,6 +210,15 @@ class MainWindow(QMainWindow):
         self._progress_bar.setObjectName("progress_bar")
         self._progress_bar.setValue(0)
         card_layout.addWidget(self._progress_bar)
+
+        self._status_list = QListWidget()
+        self._status_list.setObjectName("download_status_list")
+        card_layout.addWidget(self._status_list)
+
+        self._cancel_button = QPushButton("Cancel")
+        self._cancel_button.setObjectName("cancel_button")
+        self._cancel_button.clicked.connect(self.cancel_download)
+        card_layout.addWidget(self._cancel_button)
 
         card_layout.addStretch(1)
         outer.addWidget(card)
@@ -295,11 +311,19 @@ class MainWindow(QMainWindow):
             )
             return
         max_concurrent = int(self._config_manager.get("concurrent_downloads", 3))
+        self._cancel_event = threading.Event()
+        self._download_total = len(to_download)
+        self._status_list.clear()
+        for video in to_download:
+            label = video.title or video.url
+            item = QListWidgetItem(f"[pending] {label}")
+            self._status_list.addItem(item)
         try:
             results = self._download_coordinator.download_videos(
                 to_download,
                 max_concurrent=max_concurrent,
                 progress_callback=self._on_download_progress,
+                cancel_event=self._cancel_event,
             )
         except Exception as exc:
             QMessageBox.warning(
@@ -308,6 +332,16 @@ class MainWindow(QMainWindow):
                 f"An error occurred during download: {exc}",
             )
             return
+        for i, result in enumerate(results):
+            if i >= self._status_list.count():
+                break
+            item = self._status_list.item(i)
+            label = to_download[i].title or to_download[i].url
+            if result.success:
+                item.setText(f"[complete] {label}")
+            else:
+                err = result.error or "failed"
+                item.setText(f"[failed] {label} - {err}")
         succeeded = 0
         failed = 0
         for result in results:
@@ -335,12 +369,31 @@ class MainWindow(QMainWindow):
         )
 
     def _on_download_progress(self, percentage: float) -> None:
-        """Update the progress bar with the current download percentage.
+        """Update the progress bar and status list with download progress.
 
         Args:
             percentage: Overall download progress from 0 to 100.
         """
         self._progress_bar.setValue(int(percentage))
+        total = self._download_total
+        if total <= 0 or self._status_list.count() == 0:
+            return
+        completed = round(percentage / 100.0 * total)
+        for i in range(self._status_list.count()):
+            item = self._status_list.item(i)
+            text = item.text()
+            if i < completed:
+                if text.startswith("[pending]") or text.startswith("[downloading]"):
+                    base = text.split("]", 1)[1].strip()
+                    item.setText(f"[complete] {base}")
+            elif text.startswith("[pending]"):
+                base = text.split("]", 1)[1].strip()
+                item.setText(f"[downloading] {base}")
+
+    def cancel_download(self) -> None:
+        """Request cancellation of the current batch download."""
+        if self._cancel_event is not None:
+            self._cancel_event.set()
 
     def _on_open_settings(self) -> None:
         """Placeholder handler for opening the settings dialog."""

@@ -20,7 +20,7 @@ class FakeDownloadCoordinator:
         self._results = results if results is not None else []
         self.calls = []
 
-    def download_videos(self, videos, max_concurrent=3, progress_callback=None):
+    def download_videos(self, videos, max_concurrent=3, progress_callback=None, cancel_event=None):
         self.calls.append(
             {"videos": list(videos), "max_concurrent": max_concurrent}
         )

@@ -19,7 +19,7 @@ def _html_response(url: str, body: str) -> HTTPResponse:
 class _NoopCoordinator:
     """Coordinator double that completes instantly without downloading."""
 
-    def download_videos(self, videos, max_concurrent=3, progress_callback=None):
+    def download_videos(self, videos, max_concurrent=3, progress_callback=None, cancel_event=None):
         if progress_callback is not None:
             progress_callback(100.0)
         return []
