@@ -16,6 +16,15 @@ def _html_response(url: str, body: str) -> HTTPResponse:
     return HTTPResponse(status_code=200, text=body, url=url, headers={"Content-Type": "text/html"})
 
 
+class _NoopCoordinator:
+    """Coordinator double that completes instantly without downloading."""
+
+    def download_videos(self, videos, max_concurrent=3, progress_callback=None):
+        if progress_callback is not None:
+            progress_callback(100.0)
+        return []
+
+
 class TestExtractIntegration:
     """Tests for MainWindow extract wiring."""
 
@@ -27,9 +36,9 @@ class TestExtractIntegration:
         else:
             cls._app = app
 
-    def _make_window(self, http: MockHTTPAdapter) -> MainWindow:
+    def _make_window(self, http: MockHTTPAdapter, coordinator=None) -> MainWindow:
         extractor = VideoExtractor(http)
-        return MainWindow(extractor=extractor)
+        return MainWindow(extractor=extractor, download_coordinator=coordinator)
 
     def test_extract_with_empty_url_shows_warning(self):
         http = MockHTTPAdapter()
@@ -74,7 +83,7 @@ class TestExtractIntegration:
             "https://example.com/series",
             _html_response("https://example.com/series", html),
         )
-        window = self._make_window(http)
+        window = self._make_window(http, coordinator=_NoopCoordinator())
         try:
             url_input = window.findChild(QLineEdit, "url_input")
             selector_input = window.findChild(QLineEdit, "selector_input")
@@ -87,7 +96,9 @@ class TestExtractIntegration:
             assert results[1].title == "Episode 2"
 
             fake_selected = [results[0]]
-            with patch("src.gui.main_window.DownloadDialog") as dialog_mock:
+            with patch("src.gui.main_window.DownloadDialog") as dialog_mock, patch(
+                "src.gui.main_window.QMessageBox.information"
+            ):
                 instance = dialog_mock.return_value
                 instance.exec.return_value = 1
                 instance.get_selected_videos.return_value = fake_selected

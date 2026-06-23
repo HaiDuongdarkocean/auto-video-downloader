@@ -18,6 +18,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.core.config_manager import ConfigManager
+from src.core.download.download_coordinator import DownloadCoordinator
+from src.core.download.m3u8_downloader import M3U8Downloader
+from src.core.download.video_converter import VideoConverter
+from src.core.history_manager import HistoryManager
+from src.core.ports.ffmpeg_adapter import FFmpegAdapter
 from src.core.ports.requests_adapter import RequestsAdapter
 from src.core.video_extractor import VideoExtractor, VideoInfo
 from src.gui.download_dialog import DownloadDialog
@@ -118,7 +124,13 @@ QMenu::item:selected {
 class MainWindow(QMainWindow):
     """Main application window with a card-based dark-themed layout."""
 
-    def __init__(self, extractor: Optional[VideoExtractor] = None) -> None:
+    def __init__(
+        self,
+        extractor: Optional[VideoExtractor] = None,
+        download_coordinator: Optional[DownloadCoordinator] = None,
+        history_manager: Optional[HistoryManager] = None,
+        config_manager: Optional[ConfigManager] = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Video Downloader")
         self.resize(720, 480)
@@ -128,6 +140,20 @@ class MainWindow(QMainWindow):
         self._progress_bar: QProgressBar = None  # type: ignore[assignment]
         self._extractor: Optional[VideoExtractor] = extractor
         self._selected_videos: List[VideoInfo] = []
+        self._download_coordinator: DownloadCoordinator = (
+            download_coordinator
+            if download_coordinator is not None
+            else DownloadCoordinator(
+                M3U8Downloader(FFmpegAdapter()),
+                VideoConverter(FFmpegAdapter()),
+            )
+        )
+        self._history_manager: HistoryManager = (
+            history_manager if history_manager is not None else HistoryManager()
+        )
+        self._config_manager: ConfigManager = (
+            config_manager if config_manager is not None else ConfigManager()
+        )
         self._setup_ui()
         self._setup_menu()
         self._apply_theme()
@@ -219,6 +245,8 @@ class MainWindow(QMainWindow):
         dialog = DownloadDialog(videos, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._selected_videos = dialog.get_selected_videos()
+            if self._selected_videos:
+                self.download_selected_videos()
 
     def extract_videos(self) -> List[VideoInfo]:
         """Read inputs and fetch video links using the configured extractor.
@@ -244,6 +272,75 @@ class MainWindow(QMainWindow):
     def get_selected_videos(self) -> List[VideoInfo]:
         """Return the videos selected in the most recent download dialog."""
         return list(self._selected_videos)
+
+    def download_selected_videos(self) -> None:
+        """Download the currently selected videos, skipping already-downloaded ones.
+
+        Filters out videos present in history, runs the download coordinator
+        over the remaining videos, records successful downloads in history,
+        and reports a summary dialog to the user.
+        """
+        selected = list(self._selected_videos)
+        if not selected:
+            return
+        to_download: List[VideoInfo] = []
+        for video in selected:
+            if not self._history_manager.is_downloaded(video.url):
+                to_download.append(video)
+        if not to_download:
+            QMessageBox.information(
+                self,
+                "Already downloaded",
+                "All videos already downloaded.",
+            )
+            return
+        max_concurrent = int(self._config_manager.get("concurrent_downloads", 3))
+        try:
+            results = self._download_coordinator.download_videos(
+                to_download,
+                max_concurrent=max_concurrent,
+                progress_callback=self._on_download_progress,
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Download error",
+                f"An error occurred during download: {exc}",
+            )
+            return
+        succeeded = 0
+        failed = 0
+        for result in results:
+            if result.success:
+                succeeded += 1
+                title = ""
+                for video in to_download:
+                    if video.url == result.video_url:
+                        title = video.title or ""
+                        break
+                self._history_manager.mark_downloaded(
+                    result.video_url,
+                    {
+                        "title": title,
+                        "path": result.output_path,
+                        "quality": "default",
+                    },
+                )
+            else:
+                failed += 1
+        QMessageBox.information(
+            self,
+            "Download complete",
+            f"Downloaded {succeeded}, failed {failed}.",
+        )
+
+    def _on_download_progress(self, percentage: float) -> None:
+        """Update the progress bar with the current download percentage.
+
+        Args:
+            percentage: Overall download progress from 0 to 100.
+        """
+        self._progress_bar.setValue(int(percentage))
 
     def _on_open_settings(self) -> None:
         """Placeholder handler for opening the settings dialog."""
